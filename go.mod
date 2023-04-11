@@ -1,4 +1,4 @@
-module splukdump
+module splunkdump
 
 go 1.19
 

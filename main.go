@@ -1,19 +1,24 @@
 package main
 
 import (
+	"bufio"
 	"encoding/binary"
-	"encoding/hex"
-	"fmt"
 	"github.com/klauspost/compress/zstd"
 	"io"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 )
 
-const baseDir = "./data"
+const baseDir = "./adsb_bratwurst"
 
 func main() {
+	go http.ListenAndServe(":8080", nil)
+
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.SetOutput(io.Discard)
 	if err := readDB(filepath.Join(baseDir, "db")); err != nil {
 		log.Fatal(err)
 	}
@@ -35,7 +40,7 @@ func readDB(name string) error {
 		}
 
 		if err := readChunk(filepath.Join(name, e.Name())); err != nil {
-			return err
+			log.Println(err)
 		}
 	}
 
@@ -43,94 +48,50 @@ func readDB(name string) error {
 }
 
 func readChunk(name string) error {
-	f, err := os.Open(filepath.Join(name, "rawdata", "journal.zst"))
+	file, err := os.Open(filepath.Join(name, "rawdata", "journal.zst"))
 	if err != nil {
 		return err
 	}
 
-	reader, err := zstd.NewReader(f)
+	zstdReader, err := zstd.NewReader(file)
 	if err != nil {
 		return err
 	}
 
-	if err := readHeader(reader); err != nil {
-		return err
-	}
+	countReader := newCountedReader(zstdReader)
 
-	for i := 0; i < 0x1E; i++ {
-		if err := readField(reader); err != nil {
+	for {
+		var nextOpCode byte
+		if err := binary.Read(countReader, binary.LittleEndian, &nextOpCode); err != nil {
+			return err
+		}
+
+		log.Printf("next: 0x%02x - %s", nextOpCode, Opcode(nextOpCode))
+		if err := Opcode(nextOpCode).Decode(countReader); err != nil {
 			return err
 		}
 	}
 
-	skipBytes(reader, 0x95)
-
-	n, err := io.CopyN(hex.NewEncoder(os.Stdout), reader, 1024)
-	if err != nil {
-		return err
-	}
-	_ = n
-
-	return fmt.Errorf("return")
-}
-
-func readHeader(r io.Reader) error {
-	skipBytes(r, 1)
-
-	var t int8 // whats this? The type?
-	if err := binary.Read(r, binary.LittleEndian, &t); err != nil {
-		return err
-	}
-
-	var l int8 // only int8?
-	if err := binary.Read(r, binary.LittleEndian, &l); err != nil {
-		return err
-	}
-
-	skipBytes(r, 0x12)
-
-	s, err := readString(r, int(l))
-	if err != nil {
-		return err
-	}
-
-	log.Printf("%0x %d %q", t, l, s)
 	return nil
 }
 
-func skipBytes(r io.Reader, l int) error {
-	_, err := io.CopyN(io.Discard, r, int64(l))
-	if err != nil {
-		return err
-	}
-	return nil
+type CountedReader struct {
+	pos int
+	r   *bufio.Reader
 }
 
-func readField(r io.Reader) error {
-	var t int8 // whats this? The type?
-	if err := binary.Read(r, binary.LittleEndian, &t); err != nil {
-		return err
-	}
-
-	var l int8 // only int8?
-	if err := binary.Read(r, binary.LittleEndian, &l); err != nil {
-		return err
-	}
-
-	s, err := readString(r, int(l))
-	if err != nil {
-		return err
-	}
-
-	log.Printf("%0x %d %q", t, l, s)
-	return nil
+func (c *CountedReader) ReadByte() (b byte, err error) {
+	b, err = c.r.ReadByte()
+	c.pos++
+	return
 }
 
-func readString(r io.Reader, length int) (string, error) {
-	b := make([]byte, length)
-	_, err := r.Read(b)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
+func (c *CountedReader) Read(p []byte) (n int, err error) {
+	n, err = io.ReadFull(c.r, p)
+	c.pos += n
+	return
+}
+
+func newCountedReader(r io.Reader) *CountedReader {
+	return &CountedReader{r: bufio.NewReaderSize(r, 8*4096)}
 }
