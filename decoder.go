@@ -1,8 +1,7 @@
-package main
+package splunker
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
 	"log"
 )
@@ -13,13 +12,13 @@ type Header struct {
 	BaseIndexTime int32
 }
 
-func headerDecoder(r *CountedReader, o Opcode) error {
+func (jd *JournalDecoder) headerDecoder(r *CountedReader, o byte) error {
 	var h Header
 	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
 		return err
 	}
 
-	log.Printf("Parsed header of journal file. Version: %d", h.Version)
+	log.Printf("Journal %s - Version: %d", jd.n, h.Version)
 	alignMask := (1 << h.AlignBits) - 1
 	_ = alignMask //TODO
 
@@ -27,21 +26,21 @@ func headerDecoder(r *CountedReader, o Opcode) error {
 }
 
 // splunkPrivateDecoder is the decoder for OpcodeSplunkPrivate
-func splunkPrivateDecoder(r *CountedReader, o Opcode) error {
-	l, err := readVariableWidthLong(r)
+func (jd *JournalDecoder) splunkPrivateDecoder(r *CountedReader, o byte) error {
+	l, err := binary.ReadUvarint(r)
 	if err != nil {
 		return err
 	}
 
-	if _, err := io.CopyN(io.Discard, r, l); err != nil {
+	if _, err := io.CopyN(io.Discard, r, int64(l)); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func stringFieldDecoder(r *CountedReader) (string, error) {
-	l, err := readVariableWidthLong(r)
+func (jd *JournalDecoder) stringFieldDecoder(r *CountedReader) (string, error) {
+	l, err := binary.ReadUvarint(r)
 	if err != nil {
 		return "", err
 	}
@@ -50,135 +49,171 @@ func stringFieldDecoder(r *CountedReader) (string, error) {
 }
 
 // hostDecoder is the decoder for OpcodeNewHost
-func hostDecoder(r *CountedReader, o Opcode) error {
-	s, err := stringFieldDecoder(r)
+func (jd *JournalDecoder) hostDecoder(r *CountedReader, o byte) error {
+	s, err := jd.stringFieldDecoder(r)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("Host: %s", s)
+	jd.s.fields[o] = append(jd.s.fields[o], s)
+
 	return nil
 }
 
 // sourceDecoder is the decoder for OpcodeNewSource
-func sourceDecoder(r *CountedReader, o Opcode) error {
-	s, err := stringFieldDecoder(r)
+func (jd *JournalDecoder) sourceDecoder(r *CountedReader, o byte) error {
+	s, err := jd.stringFieldDecoder(r)
 	if err != nil {
 		return err
 	}
+	jd.s.fields[o] = append(jd.s.fields[o], s)
 
-	log.Printf("Source: %s", s)
 	return nil
 }
 
 // sourceTypeDecoder is the decoder for OpcodeNewSourceType
-func sourceTypeDecoder(r *CountedReader, o Opcode) error {
-	s, err := stringFieldDecoder(r)
+func (jd *JournalDecoder) sourceTypeDecoder(r *CountedReader, o byte) error {
+	s, err := jd.stringFieldDecoder(r)
 	if err != nil {
 		return err
 	}
+	jd.s.fields[o] = append(jd.s.fields[o], s)
 
-	log.Printf("SourceType: %s", s)
 	return nil
 }
 
 // stringDecoder is the decoder for OpcodeNewString
-func stringDecoder(r *CountedReader, o Opcode) error {
-	s, err := stringFieldDecoder(r)
+func (jd *JournalDecoder) stringDecoder(r *CountedReader, o byte) error {
+	s, err := jd.stringFieldDecoder(r)
 	if err != nil {
 		return err
 	}
+	jd.s.fields[o] = append(jd.s.fields[o], s)
 
-	log.Printf("SourceType: %s", s)
 	return nil
 }
 
+// read the data for the following values
+// messageLength, streamID, eStorageLen, streamID, streamOffset, streamSubOffset, indexTime, subSeconds, metadataCount
+const eventInfoSize = 8*binary.MaxVarintLen64 + decBufSize + hashSize
+
 // eventDecoder is the decoder for OpcodeOldstyleEventWithHash, OpcodeOldstyleEvent
-func eventDecoder(r *CountedReader, o Opcode) error {
-	endPos, err := readVariableWidthLong(r)
-	if err != nil {
-		return err
-	}
-	log.Printf("endOfEvent: %v", endPos)
-	endPos += int64(r.pos)
-
-	var eStorageLen int64
-	if hasEstorage := o&0x4 != 0; hasEstorage {
-		el, err := readVariableWidthIntAsInt(r)
-		if err != nil {
-			return err
-		}
-		eStorageLen = int64(el)
-		log.Printf("estorage: %v", el)
-	}
-
-	if hasHash := o&0x01 == 0; hasHash {
-		var buf [20]byte
-		if _, err := r.Read(buf[:]); err != nil {
-			return err
-		}
-		log.Printf("hash: %02x", buf)
-	}
-
-	var streamId uint64
-	if err := binary.Read(r, binary.LittleEndian, &streamId); err != nil {
-		return err
-	}
-	log.Printf("streamId: %v", streamId)
-
-	streamOffset, err := readVariableWidthLong(r)
-	if err != nil {
-		return err
-	}
-	log.Printf("streamOffset: %v", streamOffset)
-
-	streamSubOffset, err := readVariableWidthInt(r)
-	if err != nil {
-		return err
-	}
-	log.Printf("streamSubOffset: %v", streamSubOffset)
-
-	indexTime, err := readVariableWidthSignedInt(r) // TODO: +basetime
-	if err != nil {
-		return err
-	}
-	log.Printf("indexTime: %v", indexTime)
-
-	subSeconds, err := readVariableWidthLong(r)
-	if err != nil {
-		return err
-	}
-	log.Printf("subSeconds: %v", subSeconds)
-
-	metadataCount, err := readVariableWidthInt(r)
+func (jd *JournalDecoder) eventDecoder(r *CountedReader, o byte) (err error) {
+	var peekOffset, n int
+	peek, err := jd.cr.Peek(eventInfoSize)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("metadataCount: %v", metadataCount)
-	for i := 0; i < int(metadataCount); i++ {
-		err := readMetadata(r, o)
+	jd.e.messageLength, n = binary.Uvarint(peek[peekOffset:])
+	peekOffset += n
+	if err != nil {
+		return err
+	}
+	// add our current position to the message length
+	// after decoding metadata of the event, the new position will
+	// be subtracted
+	jd.e.messageLength += uint64(r.pos) + uint64(peekOffset)
+
+	var eStorageLen uint64
+	if jd.e.hasExtendedStorage = o&0x4 != 0; jd.e.hasExtendedStorage {
+		jd.e.extendedStorageLen, n = binary.Uvarint(peek[peekOffset:])
+		peekOffset += n
 		if err != nil {
 			return err
 		}
 	}
 
-	if eStorageLen > 0 {
+	if jd.e.hasHash = o&0x01 == 0; jd.e.hasHash {
+		copy(jd.e.hash[:], peek[peekOffset:])
+		peekOffset += hashSize
+	}
+
+	jd.e.streamID = binary.LittleEndian.Uint64(peek[peekOffset:])
+	peekOffset += decBufSize
+
+	jd.e.streamOffset, n = binary.Uvarint(peek[peekOffset:])
+	peekOffset += n
+	if err != nil {
+		return err
+	}
+
+	jd.e.streamSubOffset, n = binary.Uvarint(peek[peekOffset:])
+	peekOffset += n
+	if err != nil {
+		return err
+	}
+
+	jd.e.indexTime, n = binary.Varint(peek[peekOffset:]) // TODO: +basetime
+	peekOffset += n
+	if err != nil {
+		return err
+	}
+	// Add the current baseTime
+	jd.e.indexTime += int64(jd.s.baseTime)
+
+	jd.e.subSeconds, n = binary.Uvarint(peek[peekOffset:])
+	peekOffset += n
+	if err != nil {
+		return err
+	}
+
+	jd.e.metadataCount, n = binary.Uvarint(peek[peekOffset:])
+	peekOffset += n
+	if err != nil {
+		return err
+	}
+
+	_, err = jd.cr.Discard(peekOffset)
+	if err != nil {
+		return err
+	}
+
+	// read all into a buffer to prevent tons of ReadByte calls
+	// per entry: 1
+	// max highest int needed: 3
+	// max var int size: MaxVarintLen64
+	peek, err = r.Peek(4 * binary.MaxVarintLen64 * int(jd.e.metadataCount))
+	if err != nil {
+		return err
+	}
+
+	peekOffset = 0
+	for i := 0; i < int(jd.e.metadataCount); i++ {
+		n, err := readMetadata(peek[peekOffset:], o)
+		if err != nil {
+			return err
+		}
+		peekOffset += n
+	}
+
+	if _, err := r.Discard(peekOffset); err != nil {
+		return err
+	}
+
+	if jd.e.hasExtendedStorage {
 		eStorage, err := readString(r, eStorageLen)
 		if err != nil {
 			return err
 		}
-		log.Println(eStorage)
+		log.Fatal(eStorage)
 	}
 
-	re, err := readString(r, endPos-int64(r.pos))
+	jd.e.messageLength = jd.e.messageLength - uint64(r.pos)
+	if cap(jd.e.message) < int(jd.e.messageLength) {
+		// create a new byte slice double the size
+		// that way we reduce re allocating the slice
+		jd.e.message = make([]byte, jd.e.messageLength*2)
+	}
+	jd.e.message = jd.e.message[:jd.e.messageLength]
+
+	// read the actual message
+	_, err = r.Read(jd.e.message)
 	if err != nil {
 		return err
 	}
-	log.Println("rawEvent", re)
-	fmt.Println(re)
 
-	log.Println("includePunctuation", (o&0x22) == 34)
+	jd.e.includePunctuation = (o & 0x22) == 34
 
 	return nil
 }

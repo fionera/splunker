@@ -1,4 +1,9 @@
-package main
+package splunker
+
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 type RawdataMetaKeyItemType struct {
 	representation  int
@@ -25,23 +30,21 @@ var (
 		rmkiTypeFloat64, rmkiTypeFloat64Sigfigs, rmkiTypeOffsetLenWencoding, {}, rmkiTypeFloat64Precision, rmkiTypeFloat64SigfigsPrecision}
 )
 
-func getTypeFromCombined(v int64) RawdataMetaKeyItemType {
+func getTypeFromCombined(v uint64) RawdataMetaKeyItemType {
 	return valuesInOrder[int(v&0xF)]
-}
-
-func getCodeFromCombined(v int64) int {
-	return int(v >> 4)
 }
 
 func (r RawdataMetaKeyItemType) isFloatType() bool {
 	return (r.representation & 0x2) != 0
 }
 
-func readMetadata(r *CountedReader, o Opcode) error {
-	metaKey, err := readVariableWidthLong(r)
-	if err != nil {
-		return err
+func readMetadata(peek []byte, o byte) (peekOffset int, err error) {
+	metaKey, n := binary.Uvarint(peek)
+	if n == -1 {
+		return 0, fmt.Errorf("cant read varint")
 	}
+	peekOffset += n
+
 	numToRead := -1
 
 	if o <= 2 {
@@ -59,12 +62,19 @@ func readMetadata(r *CountedReader, o Opcode) error {
 	}
 
 	for i := 0; i < numToRead; i++ {
-		long, err := readVariableWidthSignedLong(r)
-		if err != nil {
-			return err
+		long, n := binary.Varint(peek[peekOffset:])
+		if n == -1 {
+			return 0, fmt.Errorf("cant read varint")
 		}
+		peekOffset += n
+
+		//long, err := binary.ReadVarint(r)
+		//if err != nil {
+		//	return err
+		//}
 		//TODO add long
 		_ = long
 	}
-	return nil
+
+	return peekOffset, nil
 }

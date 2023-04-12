@@ -1,12 +1,7 @@
-package main
-
-import (
-	"fmt"
-	"log"
-)
+package splunker
 
 //go:generate stringer -type=Opcode
-type Opcode int
+type Opcode byte
 
 const (
 	OpcodeNop                   Opcode = 0
@@ -22,79 +17,40 @@ const (
 	OpcodeHashSlice             Opcode = 11
 )
 
-var opcodes = map[Opcode]Decoder{
-	OpcodeHeader:                decoderFunc(headerDecoder),
-	OpcodeSplunkPrivate:         decoderFunc(splunkPrivateDecoder),
-	OpcodeNewHost:               decoderFunc(hostDecoder),
-	OpcodeNewSource:             decoderFunc(sourceDecoder),
-	OpcodeNewSourceType:         decoderFunc(sourceTypeDecoder),
-	OpcodeNewString:             decoderFunc(stringDecoder),
-	OpcodeOldstyleEvent:         decoderFunc(eventDecoder),
-	OpcodeOldstyleEventWithHash: decoderFunc(eventDecoder),
-	OpcodeNop: decoderFunc(func(*CountedReader, Opcode) error {
-		return nil
-	}),
+func fetchDecoder(o Opcode) Decoder {
+	switch o {
+	case OpcodeHeader:
+		return decoderFunc((*JournalDecoder).headerDecoder)
+	case OpcodeSplunkPrivate:
+		return decoderFunc((*JournalDecoder).splunkPrivateDecoder)
+	case OpcodeNewHost:
+		return decoderFunc((*JournalDecoder).hostDecoder)
+	case OpcodeNewSource:
+		return decoderFunc((*JournalDecoder).sourceDecoder)
+	case OpcodeNewSourceType:
+		return decoderFunc((*JournalDecoder).sourceTypeDecoder)
+	case OpcodeNewString:
+		return decoderFunc((*JournalDecoder).stringDecoder)
+	case OpcodeOldstyleEvent:
+		return decoderFunc((*JournalDecoder).eventDecoder)
+	case OpcodeOldstyleEventWithHash:
+		return decoderFunc((*JournalDecoder).eventDecoder)
+	case OpcodeNop:
+		return decoderFunc(nil)
+	}
+	return nil
 }
 
 type Decoder interface {
-	Decode(*CountedReader, Opcode) error
+	Decode(*JournalDecoder, *CountedReader, byte) error
 }
 
-type decoderFunc func(*CountedReader, Opcode) error
+type decoderFunc func(*JournalDecoder, *CountedReader, byte) error
 
-func (d decoderFunc) Decode(r *CountedReader, o Opcode) error {
-	return d(r, o)
-}
-
-func (o Opcode) Decode(r *CountedReader) error {
-	if d, ok := opcodes[o]; ok {
-		return d.Decode(r, o)
-	}
-
-	if o >= 17 && o <= 31 {
-		log.Println("4")
-
-		if o&0x8 != 0 {
-			log.Println("GET_ACTIVE_HOST")
-			asInt, err := readVariableWidthIntAsInt(r)
-			if err != nil {
-				return err
-			}
-			log.Printf("Set %d as active host", asInt)
-		}
-
-		if o&0x4 != 0 {
-			log.Println("GET_ACTIVE_SOURCE")
-			asInt, err := readVariableWidthIntAsInt(r)
-			if err != nil {
-				return err
-			}
-			log.Printf("Set %d as active source", asInt)
-		}
-		if o&0x2 != 0 {
-			log.Println("GET_ACTIVE_SOURCETYPE")
-			asInt, err := readVariableWidthIntAsInt(r)
-			if err != nil {
-				return err
-			}
-			log.Printf("Set %d as active source type", asInt)
-		}
-		if o&0x1 != 0 {
-			log.Println("GET_ACTIVE_TIME")
-			asInt, err := read32BitLong(r)
-			if err != nil {
-				return err
-			}
-			log.Printf("Set %d as active time", asInt)
-		}
-
+func (d decoderFunc) Decode(j *JournalDecoder, r *CountedReader, o byte) error {
+	if d == nil {
 		return nil
 	}
 
-	if o >= 32 && o <= 43 {
-		log.Println("5")
-		return eventDecoder(r, o)
-	}
-
-	return fmt.Errorf("unknown opcode: 0x%02x", int32(o))
+	return d(j, r, o)
 }
