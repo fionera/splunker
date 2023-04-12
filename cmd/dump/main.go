@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
-	splunker "splunkdump"
+
+	"github.com/fionera/splunker"
 )
 
 const baseDir = "./adsb_bratwurst"
@@ -66,10 +69,13 @@ func readBuckets(name string) error {
 
 func runDecode(d *splunker.JournalDecoder) error {
 	var e splunker.Event
+	var w io.Writer = bufio.NewWriterSize(os.Stdout, 4*1024*1024)
 	for d.Scan() {
 		e = d.Event()
 		_ = e
-		fmt.Println(e.MessageString())
+
+		_, _ = w.Write(e.Message())
+		//fmt.Println(e.MessageString())
 		//fmt.Println(fmt.Sprintf("%s - %s - %s: %s", d.Host(), d.SourceType(), d.Source(), e.MessageString()))
 	}
 

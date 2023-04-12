@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"io"
 	"log"
+
+	"github.com/fionera/splunker/varint"
 )
 
 type Header struct {
@@ -105,7 +107,7 @@ func (jd *JournalDecoder) eventDecoder(r *CountedReader, o byte) (err error) {
 		return err
 	}
 
-	jd.e.messageLength, n = binary.Uvarint(peek[peekOffset:])
+	jd.e.messageLength, n = varint.Uvarint(peek[peekOffset:])
 	peekOffset += n
 	if err != nil {
 		return err
@@ -117,7 +119,7 @@ func (jd *JournalDecoder) eventDecoder(r *CountedReader, o byte) (err error) {
 
 	var eStorageLen uint64
 	if jd.e.hasExtendedStorage = o&0x4 != 0; jd.e.hasExtendedStorage {
-		jd.e.extendedStorageLen, n = binary.Uvarint(peek[peekOffset:])
+		jd.e.extendedStorageLen, n = varint.Uvarint(peek[peekOffset:])
 		peekOffset += n
 		if err != nil {
 			return err
@@ -132,19 +134,19 @@ func (jd *JournalDecoder) eventDecoder(r *CountedReader, o byte) (err error) {
 	jd.e.streamID = binary.LittleEndian.Uint64(peek[peekOffset:])
 	peekOffset += decBufSize
 
-	jd.e.streamOffset, n = binary.Uvarint(peek[peekOffset:])
+	jd.e.streamOffset, n = varint.Uvarint(peek[peekOffset:])
 	peekOffset += n
 	if err != nil {
 		return err
 	}
 
-	jd.e.streamSubOffset, n = binary.Uvarint(peek[peekOffset:])
+	jd.e.streamSubOffset, n = varint.Uvarint(peek[peekOffset:])
 	peekOffset += n
 	if err != nil {
 		return err
 	}
 
-	jd.e.indexTime, n = binary.Varint(peek[peekOffset:]) // TODO: +basetime
+	jd.e.indexTime, n = varint.Varint(peek[peekOffset:]) // TODO: +basetime
 	peekOffset += n
 	if err != nil {
 		return err
@@ -152,13 +154,13 @@ func (jd *JournalDecoder) eventDecoder(r *CountedReader, o byte) (err error) {
 	// Add the current baseTime
 	jd.e.indexTime += int64(jd.s.baseTime)
 
-	jd.e.subSeconds, n = binary.Uvarint(peek[peekOffset:])
+	jd.e.subSeconds, n = varint.Uvarint(peek[peekOffset:])
 	peekOffset += n
 	if err != nil {
 		return err
 	}
 
-	jd.e.metadataCount, n = binary.Uvarint(peek[peekOffset:])
+	jd.e.metadataCount, n = varint.Uvarint(peek[peekOffset:])
 	peekOffset += n
 	if err != nil {
 		return err

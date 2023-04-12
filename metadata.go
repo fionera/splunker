@@ -1,8 +1,9 @@
 package splunker
 
 import (
-	"encoding/binary"
 	"fmt"
+
+	"github.com/fionera/splunker/varint"
 )
 
 type RawdataMetaKeyItemType struct {
@@ -39,7 +40,7 @@ func (r RawdataMetaKeyItemType) isFloatType() bool {
 }
 
 func readMetadata(peek []byte, o byte) (peekOffset int, err error) {
-	metaKey, n := binary.Uvarint(peek)
+	metaKey, n := varint.Uvarint(peek)
 	if n == -1 {
 		return 0, fmt.Errorf("cant read varint")
 	}
@@ -62,7 +63,7 @@ func readMetadata(peek []byte, o byte) (peekOffset int, err error) {
 	}
 
 	for i := 0; i < numToRead; i++ {
-		long, n := binary.Varint(peek[peekOffset:])
+		long, n := varint.Varint(peek[peekOffset:])
 		if n == -1 {
 			return 0, fmt.Errorf("cant read varint")
 		}

@@ -187,6 +187,10 @@ func (e Event) String() string {
 	)
 }
 
+func (e Event) Message() []byte {
+	return e.message
+}
+
 func (e Event) MessageString() string {
 	return bytesToStr(e.message)
 }
@@ -219,7 +223,7 @@ func openJournal(name string) (io.Reader, error) {
 		return nil, err
 	}
 
-	zstdReader, err := zstd.NewReader(file)
+	zstdReader, err := zstd.NewReader(file, zstd.WithDecoderConcurrency(0))
 	if err != nil {
 		return nil, fmt.Errorf("zstd.NewReader: %v", err)
 	}
